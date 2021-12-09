@@ -8,44 +8,27 @@
 
 import UIKit
 
-class FuncTodoTableViewController: UITableViewController {
+class FuncTableViewControllerDataSource: NSObject, UITableViewDataSource {
     
     enum Section: Int {
     case input = 0, todos, max
     }
     
-    var todos: [String] = []
-
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        
-        self.navigationItem.rightBarButtonItem = UIBarButtonItem(barButtonSystemItem: .add, target: self, action: #selector(addAction))
-
-        TodoStore.shared.getTodoItems { data in
-            self.todos += data
-            self.title = "TODO - \(self.todos.count)"
-            self.tableView.reloadData()
-        }
+    var todos: [String]
+    weak var owner: FuncTodoTableViewController?
+    
+    init(todos: [String], owner: FuncTodoTableViewController?) {
+        self.todos = todos
+        self.owner = owner
     }
     
-    @objc func addAction() {
-        guard let cell = tableView.cellForRow(at: IndexPath(row: 0, section: Section.input.rawValue)) as? TableViewInputCell, let text = cell.textField.text else {
-            return
-        }
-        
-        todos.insert(text, at: 0)
-        cell.textField.text = ""
-        title = "TODO - \(todos.count)"
-        tableView.reloadData()
-    }
-
-    // MARK: - Table view data source
+    // MARK: - UITableViewDataSource
     
-    override func numberOfSections(in tableView: UITableView) -> Int {
+    func numberOfSections(in tableView: UITableView) -> Int {
         return Section.max.rawValue
     }
 
-    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
         guard let section = Section(rawValue: section) else {
             fatalError()
         }
@@ -56,7 +39,7 @@ class FuncTodoTableViewController: UITableViewController {
         }
     }
 
-    override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         guard let section = Section(rawValue: indexPath.section) else {
             fatalError()
         }
@@ -64,13 +47,13 @@ class FuncTodoTableViewController: UITableViewController {
         switch section {
         case .input:
             let cell = tableView.dequeueReusableCell(withIdentifier: "TableViewInputCell", for: indexPath) as! TableViewInputCell
-            cell.delegate = self
+            cell.delegate = owner
             
             return cell
         case .todos:
             let cell = tableView.dequeueReusableCell(withIdentifier: "reuseIdentifier", for: indexPath)
 
-            cell.textLabel?.text = self.todos[indexPath.row]
+            cell.textLabel?.text = todos[indexPath.row]
 
             return cell
         default:
@@ -78,9 +61,99 @@ class FuncTodoTableViewController: UITableViewController {
         }
         
     }
+}
 
+class FuncTodoTableViewController: UITableViewController {
+    struct State: StateType {
+        var dataSource = FuncTableViewControllerDataSource(todos: [], owner: nil)
+        var text: String = ""
+    }
+    
+    enum Action: ActionType {
+        case updateText(text: String)
+        case addTodos(items: [String])
+        case remoteTodo(index: Int)
+        case loadTodos
+    }
+    
+    enum Command: CommandType {
+        case loadTodos(completion: ([String]) -> Void)
+    }
+    
+    lazy var reducer: (State, Action) -> (state: State, command: Command?) = { [weak self] (state, action) in
+        
+        var state = state
+        var command: Command? = nil
+        
+        switch action {
+        case .updateText(let text):
+            state.text = text
+        
+        case .addTodos(let items):
+            state.dataSource = FuncTableViewControllerDataSource(todos: items + state.dataSource.todos, owner: state.dataSource.owner)
+            
+        case .remoteTodo(let index):
+            let oldTodos = state.dataSource.todos
+            state.dataSource = FuncTableViewControllerDataSource(todos: Array(oldTodos[..<index] + oldTodos[(index+1)...]), owner: state.dataSource.owner)
+            
+        case .loadTodos:
+            command = Command.loadTodos(completion: { data in
+                self?.store.dispatch(.addTodos(items: data))
+            })
+        }
+        
+        return (state, command)
+    }
+    
+    var store: Store<Action, State, Command>!
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        
+        self.navigationItem.rightBarButtonItem = UIBarButtonItem(barButtonSystemItem: .add, target: self, action: #selector(addAction))
+        
+        let dataSource = FuncTableViewControllerDataSource(todos: [], owner: self)
+        store = Store<Action, State, Command>(reducer: reducer, initial: State(dataSource: dataSource, text: ""))
+        
+        store.subscribe { [weak self] (state, previousState, command) in
+            self?.stateDidChanged(state: state, previousState: previousState, command: command)
+        }
+
+        stateDidChanged(state: store.state, previousState: nil, command: nil)
+        
+        store.dispatch(.loadTodos)
+    }
+    
+    @objc func addAction() {
+        store.dispatch(.addTodos(items: [store.state.text]))
+        store.dispatch(.updateText(text: ""))
+    }
+    
+    func stateDidChanged(state: State, previousState: State?, command: Command?) {
+        if let command = command {
+            switch command {
+            case .loadTodos(let handler):
+                TodoStore.shared.getTodoItems(completionHandler: handler)
+            }
+        }
+        
+        if previousState == nil || previousState!.dataSource.todos != state.dataSource.todos {
+            let dataSource = state.dataSource
+            tableView.dataSource = dataSource
+            tableView.reloadData()
+            title = "TODO - (\(dataSource.todos.count))"
+        }
+        
+        if previousState == nil || previousState!.text != state.text {
+            navigationItem.rightBarButtonItem?.isEnabled = state.text.count >= 3
+
+            let cell = tableView.cellForRow(at: IndexPath(row: 0, section: FuncTableViewControllerDataSource.Section.input.rawValue)) as? TableViewInputCell
+            cell?.textField.text = state.text
+        }
+    }
+    
     override func tableView(_ tableView: UITableView, canEditRowAt indexPath: IndexPath) -> Bool {
-        guard let section = Section(rawValue: indexPath.section) else {
+        guard let section = FuncTableViewControllerDataSource.Section(rawValue: indexPath.section) else {
             return false
         }
         
@@ -93,9 +166,7 @@ class FuncTodoTableViewController: UITableViewController {
 
     override func tableView(_ tableView: UITableView, commit editingStyle: UITableViewCell.EditingStyle, forRowAt indexPath: IndexPath) {
         if editingStyle == .delete {
-            self.todos.remove(at: indexPath.row)
-            title = "TODO - \(todos.count)"
-            tableView.deleteRows(at: [indexPath], with: .fade)
+            store.dispatch(.remoteTodo(index: indexPath.row))
         }
     }
 
@@ -103,6 +174,6 @@ class FuncTodoTableViewController: UITableViewController {
 
 extension FuncTodoTableViewController: TableViewInputCellDelegate {
     func inputChanged(cell: TableViewInputCell, text: String) {
-        navigationItem.rightBarButtonItem?.isEnabled = text.count >= 3
+        store.dispatch(.updateText(text: text))
     }
 }

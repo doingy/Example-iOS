@@ -660,7 +660,6 @@
                             </tableViewCell>
                         </prototypes>
                         <connections>
-                            <outlet property="dataSource" destination="IIp-ie-Qef" id="Nug-fe-OCJ"/>
                             <outlet property="delegate" destination="IIp-ie-Qef" id="kW8-8W-g33"/>
                         </connections>
                     </tableView>
